@@ -1,0 +1,26 @@
+{
+  "episode_memory": {
+    "families": 16,
+    "full": {"loss": 0.97665, "h1_iou": 0.02850, "h4_iou": 0.02235, "h8_iou": 0.01583},
+    "no_episode_read": {"loss": 1.00449, "h1_iou": 0.0, "h4_iou": 0.0, "h8_iou": 0.0},
+    "uniform_slot_read": {"loss": 0.97192, "h1_iou": 0.02565, "h4_iou": 0.02121, "h8_iou": 0.01576},
+    "zero_before_prediction": {"loss": 1.02075, "h1_iou": 0.01277, "h4_iou": 0.00988, "h8_iou": 0.00870}
+  },
+  "temporal_order": {
+    "families": 32,
+    "full": {"loss": 0.97164, "h1_iou": 0.04099, "h1_mass_ratio": 39.27},
+    "reversed_history": {"loss": 0.97090, "h1_iou": 0.04063, "h1_mass_ratio": 39.94},
+    "shuffled_history": {"loss": 0.97080, "h1_iou": 0.04157, "h1_mass_ratio": 39.80},
+    "reset_episode": {"loss": 0.99870, "h1_iou": 0.01920, "h1_mass_ratio": 90.80}
+  },
+  "sensory_entropy": {
+    "families": 32,
+    "rgb": {"loss": 0.97164, "h1_iou": 0.04099, "target_depth_lift": 0.0214, "h1_expected_nodes": 23.17},
+    "grayscale": {"loss": 0.93624, "h1_iou": 0.06242, "target_depth_lift": 0.2541, "h1_expected_nodes": 25.21}
+  },
+  "nilsson_proxy": {
+    "families": 16,
+    "low_res_12x12": {"loss": 0.83104, "h1_iou": 0.11641},
+    "full_luminance_192x192": {"loss": 0.90278, "h1_iou": 0.06448}
+  }
+}
