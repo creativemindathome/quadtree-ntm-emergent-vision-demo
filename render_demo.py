@@ -158,7 +158,7 @@ def render(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--checkpoint", type=Path, default=Path("runs/causal-pinch-v3-3k-final/checkpoint.pt"))
+    parser.add_argument("--model", "--checkpoint", dest="checkpoint", type=Path, required=True)
     parser.add_argument("--output", type=Path, default=Path("inspection/causal_pinch/long_quadtree.gif"))
     parser.add_argument("--seed", type=int, default=701)
     parser.add_argument("--scale", type=int, default=2)

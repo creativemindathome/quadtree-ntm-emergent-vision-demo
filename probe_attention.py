@@ -142,7 +142,7 @@ def run(checkpoint: Path, families: int, seed: int, output: Path) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--checkpoint", type=Path, required=True)
+    parser.add_argument("--model", "--checkpoint", dest="checkpoint", type=Path, required=True)
     parser.add_argument("--families", type=int, default=16)
     parser.add_argument("--seed", type=int, default=2603)
     parser.add_argument("--output", type=Path, required=True)

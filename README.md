@@ -1,88 +1,126 @@
-# Active Quadtree Recurrent World Model — 10K Presentation Snapshot
+# Active Quadtree World Models
 
-This repository is a self-contained, reproducible snapshot of the completed
-10,000-update causal-pinch checkpoint used in the accompanying presentation.
-It packages the exact model weights, environment generator, quadtree memory,
-visual renderer, and episode-memory ablation.
+### Sparse recurrent perception with physically addressed memory
 
-![Soft attention and hard quadtree](artifacts/soft-attention-quadtree.gif)
+![Target, hard tree, soft effective depth, and reconstruction](artifacts/soft-attention-quadtree.gif)
 
-## What is being demonstrated
+## TL;DR
 
-A classical RNN compresses a scene into one recurrent vector. This model keeps
-sparse recurrent payloads at exact quadtree addresses and supplements them with
-16 global episode slots:
+We study a recurrent world model that does not compress an entire scene into
+one global hidden vector. It stores recurrent payloads at exact multiscale
+quadtree addresses and uses a small episode memory for object- and event-level
+information. On a heterogeneous 2D contact environment, the model learns
+different hard and soft spatial allocations while predicting RGB futures at
+horizons 1, 4, and 8.
+
+This repository contains a runnable pretrained model, the environment, the
+architecture, visual probes, and the recorded ablations used in the project
+demonstration.
+
+## Method
+
+For quadtree address `a`, spatial recurrence is local:
 
 ```text
-RGB regions + quadtree address + time
-                  |
-                  v
-       addressed recurrent memory
-                  |
-        episode-slot attention
-                  |
-                  v
-       H1 / H4 / H8 predictions
+m[t,a] = F(x[t,a], m[t-1,a], local reads, episode context)
 ```
 
-The checkpoint uses a depth-8 virtual address space and the historical
-variance-budgeted execution support of at most 341 candidates. The soft
-posterior can allocate fewer effective nodes than the hard candidate tree.
-Later uncapped-executor experiments are intentionally excluded from this
-presentation snapshot.
+The address identifies a physical image region. Empty or predictable regions
+can remain coarse, while boundaries, contacts, and moving objects can receive
+deeper refinement. Sixteen global episode slots carry information that should
+move with an entity rather than remain attached to one coordinate.
 
-## Run the demo
+```text
+RGB region + quadtree address + temporal context
+                         |
+                         v
+              addressed recurrent memory
+                         |
+                  episode read/write
+                         |
+                         v
+               H1 / H4 / H8 futures
+```
 
-Python 3.11–3.14 is supported.
+The demonstrated model uses a depth-8 virtual address space and a
+variance-budgeted execution support of 341 candidates. The differentiable soft
+tree can assign substantially fewer effective nodes than the hard candidate
+tree.
+
+## Repository structure
+
+| Path | What it contains |
+|---|---|
+| [`ntm/`](ntm) | Quadtree-addressed recurrent memory and world-model architecture |
+| [`tasks/`](tasks) | Heterogeneous causal-pinch environment and RGB quadtree encoder |
+| [`pretrained/`](pretrained) | Trained 10,000-update model and exact configuration |
+| [`artifacts/`](artifacts) | Animations, dashboards, and recorded ablations |
+| [`render_demo.py`](render_demo.py) | Environment, hard tree, soft depth, and reconstruction renderer |
+| [`probe_attention.py`](probe_attention.py) | Episode-memory read ablation |
+| [`RECURRENCE_THOUGHT_EXPERIMENT.md`](RECURRENCE_THOUGHT_EXPERIMENT.md) | Global-RNN versus addressed-memory thought experiment |
+
+## Setup
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e '.[test]'
 pytest -q
-python render_demo.py \
-  --checkpoint checkpoints/checkpoint-010000.pt \
-  --output generated/quadtree-demo.gif \
-  --seed 701 --scale 2 --highlight-target --show-depth
 ```
 
-The resulting animation contains raw environment input, evaluator-only target
-annotation, hard leaves, soft effective depth, and reconstruction.
+Python 3.11–3.14 is supported. Rendering and evaluation work on CPU and Apple
+Silicon; CUDA is not required.
 
-## Reproduce the attention ablation
+## Instructions
 
-```bash
-python probe_attention.py \
-  --checkpoint checkpoints/checkpoint-010000.pt \
-  --families 16 --seed 2603 \
-  --output generated/attention-ablation.json
-```
+- Visualize learned multiscale recurrence:
 
-The recorded reference result is in
-[`artifacts/attention_ablation_16.json`](artifacts/attention_ablation_16.json).
-It supports two different claims:
+  ```bash
+  python render_demo.py \
+    --model pretrained/model-10000.pt \
+    --output generated/quadtree-demo.gif \
+    --seed 701 --scale 2 --highlight-target --show-depth
+  ```
 
-- Episode memory carries useful predictive information.
-- Selective slot addressing is only weakly better than a uniform slot read in
-  this checkpoint.
+- Reproduce the episode-memory ablation:
 
-## Recurrence distinction
+  ```bash
+  python probe_attention.py \
+    --model pretrained/model-10000.pt \
+    --families 16 --seed 2603 \
+    --output generated/attention-ablation.json
+  ```
 
-The presentation thought experiment and its reconstructed answer are in
-[`RECURRENCE_THOUGHT_EXPERIMENT.md`](RECURRENCE_THOUGHT_EXPERIMENT.md).
+- Study the recurrence distinction:
 
-## Artifact provenance
+  Read [`RECURRENCE_THOUGHT_EXPERIMENT.md`](RECURRENCE_THOUGHT_EXPERIMENT.md),
+  then reconstruct which information should remain spatial and which should
+  follow an occluded object through episode memory.
 
-- Training update: 10,000
-- Parameters: 600,632
-- Maximum quadtree depth: 8
-- Episode slots: 16
-- Prediction slots: 4
-- Candidate execution support: 341 nodes
-- Environment: `causal_pinch_three_step_diverse`
-- Original run: `causal-pinch-v3-depth8-diverse-long-10k`
+## Results
 
-This is a research demonstration, not a claim that conditional-compute scaling
-has been solved. In this checkpoint, candidate support remains externally
-bounded; the learned soft allocation is the object of inspection.
+The 16-family attention ablation separates the value of episode memory from the
+value of selective slot addressing:
 
+| Read policy | Loss | H1 IoU | H4 IoU | H8 IoU |
+|---|---:|---:|---:|---:|
+| Learned episode read | 0.977 | 0.0285 | 0.0224 | 0.0158 |
+| No episode read | 1.004 | 0 | 0 | 0 |
+| Uniform slot read | **0.972** | 0.0257 | 0.0212 | 0.0158 |
+| Zero episode memory before prediction | 1.021 | 0.0128 | 0.0099 | 0.0087 |
+
+Episode memory carries useful predictive information. Selective addressing is
+only weakly justified by this model: a uniform slot average slightly improves
+loss while modestly reducing short-horizon IoU. The recorded measurements are
+in [`artifacts/attention_ablation_16.json`](artifacts/attention_ablation_16.json).
+
+## Scope
+
+This project demonstrates learned soft spatial allocation and exact-address
+recurrence. It does not claim that conditional execution is solved: the
+demonstrated model uses bounded candidate support, and later experiments on
+fully uncapped execution are not part of this repository.
+
+## License
+
+Released under the [MIT License](LICENSE).
