@@ -58,6 +58,7 @@ def _highlight_target(
 def render(
         checkpoint: Path, output: Path, seed: int, scale: int,
         highlight_target: bool = False, show_depth: bool = False,
+        start_frame: int = 0,
 ) -> dict:
     run = checkpoint.parent
     config = json.loads((run / "config.json").read_text())
@@ -143,6 +144,11 @@ def render(
         leaf_counts.append(len(leaves))
         max_depths.append(max(depths))
 
+    if not 0 <= start_frame < len(frames):
+        raise ValueError(f"start-frame must lie in [0, {len(frames) - 1}]")
+    frames = frames[start_frame:]
+    leaf_counts = leaf_counts[start_frame:]
+    max_depths = max_depths[start_frame:]
     output.parent.mkdir(parents=True, exist_ok=True)
     frames[0].save(output, save_all=True, append_images=frames[1:], duration=120, loop=0, disposal=2)
     return {
@@ -153,6 +159,7 @@ def render(
         "candidate_nodes": tree_config.max_nodes,
         "target_highlighted": highlight_target,
         "effective_depth_panel": show_depth,
+        "start_frame": start_frame,
     }
 
 
@@ -164,10 +171,12 @@ def main() -> None:
     parser.add_argument("--scale", type=int, default=2)
     parser.add_argument("--highlight-target", action="store_true")
     parser.add_argument("--show-depth", action="store_true")
+    parser.add_argument("--start-frame", type=int, default=0)
     args = parser.parse_args()
     print(json.dumps(render(
         args.checkpoint, args.output, args.seed, args.scale,
         highlight_target=args.highlight_target, show_depth=args.show_depth,
+        start_frame=args.start_frame,
     ), indent=2))
 
 

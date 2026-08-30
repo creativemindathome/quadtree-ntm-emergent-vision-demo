@@ -81,7 +81,7 @@ Silicon; CUDA is not required.
   python render_demo.py \
     --model pretrained/model-10000.pt \
     --output generated/quadtree-demo.gif \
-    --seed 701 --scale 2 --show-depth
+    --seed 701 --scale 2 --show-depth --start-frame 2
   ```
 
 - Reproduce the episode-memory ablation:
