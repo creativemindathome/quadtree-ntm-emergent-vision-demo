@@ -1,0 +1,13 @@
+Metadata-Version: 2.4
+Name: quadtree-ntm-emergent-vision-demo
+Version: 0.1.0
+Summary: Reproducible presentation snapshot of an active quadtree recurrent world model
+Requires-Python: <3.15,>=3.11
+License-File: LICENSE
+Requires-Dist: kornia<0.9,>=0.8
+Requires-Dist: numpy<3,>=2.0
+Requires-Dist: pillow<13,>=11
+Requires-Dist: torch<3,>=2.6
+Provides-Extra: test
+Requires-Dist: pytest<10,>=8; extra == "test"
+Dynamic: license-file

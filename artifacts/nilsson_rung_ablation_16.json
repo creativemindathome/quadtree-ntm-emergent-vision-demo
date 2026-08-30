@@ -1,0 +1,57 @@
+{
+  "checkpoint": "/Users/curiousmind/Desktop/pytorch-ntm-emergent-vision/runs/causal-pinch-v3-depth8-diverse-long-10k/checkpoint-010000.pt",
+  "device": "mps",
+  "seed": 7433,
+  "rung_definition": {
+    "I irradiance": "one global luminance channel expanded to the canvas",
+    "II directional": "2x2 directional luminance sectors (engineering proxy)",
+    "III low-res": "12x12 luminance image expanded to the canvas",
+    "IV object vision": "full 192x192 luminance image"
+  },
+  "metrics": {
+    "I irradiance": {
+      "spatial_bins_per_axis": 1,
+      "families": 16,
+      "prediction_loss": 1.6093267723917961,
+      "h1_hard_iou": 0.0054225618951022625,
+      "h4_hard_iou": 0.0049215649560210295,
+      "h8_hard_iou": 0.0037858750874875113,
+      "h1_expected_nodes": 12.887571811676025,
+      "h1_attention_depth_lift": -0.006475832313299179
+    },
+    "II directional": {
+      "spatial_bins_per_axis": 2,
+      "families": 16,
+      "prediction_loss": 1.5989550352096558,
+      "h1_hard_iou": 0.005459346473799087,
+      "h4_hard_iou": 0.004943245767208282,
+      "h8_hard_iou": 0.0037858750874875113,
+      "h1_expected_nodes": 15.040583968162537,
+      "h1_attention_depth_lift": -0.010737787932157516
+    },
+    "III low-res": {
+      "spatial_bins_per_axis": 12,
+      "families": 16,
+      "prediction_loss": 0.8310448788106441,
+      "h1_hard_iou": 0.11640704856836237,
+      "h4_hard_iou": 0.09256636245117988,
+      "h8_hard_iou": 0.049224728223634884,
+      "h1_expected_nodes": 58.76503551006317,
+      "h1_attention_depth_lift": 0.8008332476019859
+    },
+    "IV object vision": {
+      "spatial_bins_per_axis": 192,
+      "families": 16,
+      "prediction_loss": 0.9027779176831245,
+      "h1_hard_iou": 0.06447985908016562,
+      "h4_hard_iou": 0.043631556909531355,
+      "h8_hard_iou": 0.028270604088902473,
+      "h1_expected_nodes": 43.188346326351166,
+      "h1_attention_depth_lift": 0.952813483774662
+    }
+  },
+  "animation": {
+    "gif": "/Users/curiousmind/Desktop/pytorch-ntm-emergent-vision/inspection/causal_pinch_long10k/nilsson_rungs_10k.gif",
+    "frames": 80
+  }
+}

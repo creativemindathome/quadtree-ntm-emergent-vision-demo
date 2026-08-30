@@ -1,0 +1,17 @@
+LICENSE
+README.md
+pyproject.toml
+ntm/__init__.py
+ntm/quadtree_memory.py
+ntm/quadtree_world_model_v2.py
+quadtree_ntm_emergent_vision_demo.egg-info/PKG-INFO
+quadtree_ntm_emergent_vision_demo.egg-info/SOURCES.txt
+quadtree_ntm_emergent_vision_demo.egg-info/dependency_links.txt
+quadtree_ntm_emergent_vision_demo.egg-info/requires.txt
+quadtree_ntm_emergent_vision_demo.egg-info/top_level.txt
+tasks/__init__.py
+tasks/calibration_probe.py
+tasks/object_permanence_arena.py
+tasks/rgb_quadtree.py
+tasks/visual_domains.py
+tests/test_checkpoint.py

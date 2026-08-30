@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quadtree-ntm-emergent-vision-demo"
+version = "0.1.0"
+description = "Reproducible presentation snapshot of an active quadtree recurrent world model"
+requires-python = ">=3.11,<3.15"
+dependencies = [
+  "kornia>=0.8,<0.9",
+  "numpy>=2.0,<3",
+  "pillow>=11,<13",
+  "torch>=2.6,<3",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8,<10"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.setuptools]
+packages = ["ntm", "tasks"]

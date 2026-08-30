@@ -1,0 +1,55 @@
+{
+  "checkpoint": "/Users/curiousmind/Desktop/pytorch-ntm-emergent-vision/runs/causal-pinch-v3-depth8-diverse-long-10k/checkpoint-010000.pt",
+  "device": "mps",
+  "seed": 2603,
+  "conditions": {
+    "full": {
+      "families": 16,
+      "prediction_loss": 0.9766489341855049,
+      "h1_hard_iou": 0.0285019688308239,
+      "h4_hard_iou": 0.022354469168931246,
+      "h8_hard_iou": 0.015831489581614733,
+      "h1_expected_nodes": 19.785563230514526,
+      "h1_attention_depth_lift": -0.1252746433019638,
+      "h1_mass_ratio": 40.6920850276947,
+      "loss_delta_vs_full": 0.0,
+      "h1_iou_delta_vs_full": 0.0
+    },
+    "no_episode_read": {
+      "families": 16,
+      "prediction_loss": 1.0044911168515682,
+      "h1_hard_iou": 0.0,
+      "h4_hard_iou": 0.0,
+      "h8_hard_iou": 0.0,
+      "h1_expected_nodes": 17.30843597650528,
+      "h1_attention_depth_lift": -0.13784582912921906,
+      "h1_mass_ratio": 37.93320566415787,
+      "loss_delta_vs_full": 0.02784218266606331,
+      "h1_iou_delta_vs_full": -0.0285019688308239
+    },
+    "uniform_slot_read": {
+      "families": 16,
+      "prediction_loss": 0.971922617405653,
+      "h1_hard_iou": 0.02565363235771656,
+      "h4_hard_iou": 0.021212812513113022,
+      "h8_hard_iou": 0.015764167066663504,
+      "h1_expected_nodes": 20.93091368675232,
+      "h1_attention_depth_lift": -0.12638643011450768,
+      "h1_mass_ratio": 42.574209094047546,
+      "loss_delta_vs_full": -0.0047263167798519135,
+      "h1_iou_delta_vs_full": -0.002848336473107338
+    },
+    "zero_before_prediction": {
+      "families": 16,
+      "prediction_loss": 1.0207534097135067,
+      "h1_hard_iou": 0.01277343874971848,
+      "h4_hard_iou": 0.009883029837510549,
+      "h8_hard_iou": 0.008696794124261942,
+      "h1_expected_nodes": 19.530506908893585,
+      "h1_attention_depth_lift": -0.12493317201733589,
+      "h1_mass_ratio": 96.47157764434814,
+      "loss_delta_vs_full": 0.044104475528001785,
+      "h1_iou_delta_vs_full": -0.01572853008110542
+    }
+  }
+}
