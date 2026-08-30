@@ -2,7 +2,7 @@
 
 ### Sparse recurrent perception with physically addressed memory
 
-![Target, hard tree, soft effective depth, and reconstruction](artifacts/soft-attention-quadtree.gif)
+![Environment, hard tree, soft effective depth, and reconstruction](artifacts/soft-attention-quadtree.gif)
 
 ## TL;DR
 
@@ -79,7 +79,7 @@ Silicon; CUDA is not required.
   python render_demo.py \
     --model pretrained/model-10000.pt \
     --output generated/quadtree-demo.gif \
-    --seed 701 --scale 2 --highlight-target --show-depth
+    --seed 701 --scale 2 --show-depth
   ```
 
 - Reproduce the episode-memory ablation:
