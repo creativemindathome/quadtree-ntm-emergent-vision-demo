@@ -56,6 +56,7 @@ tree.
 | [`pretrained/`](pretrained) | Trained 10,000-update model and exact configuration |
 | [`artifacts/`](artifacts) | Animations, dashboards, and recorded ablations |
 | [`PRESENTATION_ABLATIONS.md`](PRESENTATION_ABLATIONS.md) | Claim-bound ablations and a 30-second narration |
+| [`PROPOSED_CLOCK_ABLATION.md`](PROPOSED_CLOCK_ABLATION.md) | Equal-budget temporal-renewal experiment and shuffled null |
 | [`render_demo.py`](render_demo.py) | Environment, hard tree, soft depth, and reconstruction renderer |
 | [`probe_attention.py`](probe_attention.py) | Episode-memory read ablation |
 | [`RECURRENCE_THOUGHT_EXPERIMENT.md`](RECURRENCE_THOUGHT_EXPERIMENT.md) | Global-RNN versus addressed-memory thought experiment |
