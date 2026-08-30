@@ -122,7 +122,3 @@ This project demonstrates learned soft spatial allocation and exact-address
 recurrence. It does not claim that conditional execution is solved: the
 demonstrated model uses bounded candidate support, and later experiments on
 fully uncapped execution are not part of this repository.
-
-## License
-
-Released under the [MIT License](LICENSE).
