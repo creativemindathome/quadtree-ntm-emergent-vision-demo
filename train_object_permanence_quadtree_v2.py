@@ -146,6 +146,14 @@ def parse_args() -> argparse.Namespace:
         help="softmin temperature in local bits/bit for innovation-tree attention",
     )
     parser.add_argument(
+        "--structure-temperature-final-bpp", type=float, default=None,
+        help="optional final local-bpp temperature, linearly annealed over training",
+    )
+    parser.add_argument(
+        "--predictive-logit-soft-clip", type=float, default=12.0,
+        help="smooth loss-only bound for RGB bit logits; <=0 disables it",
+    )
+    parser.add_argument(
         "--proposal-distillation-weight", type=float, default=1.0,
         help="weight on posterior-matched traversal cross-entropy in bits per reached decision",
     )
@@ -927,14 +935,20 @@ def recursive_rgb_bit_loss(
     reference_rgb: Optional[torch.Tensor] = None,
     structure_temperature_bpp: float = 0.0,
     minimum_depth: int = 0,
+    predictive_logit_soft_clip: float = 0.0,
 ) -> Tuple[torch.Tensor, Dict[str, float], torch.Tensor]:
     """Marginalize every valid STOP/SPLIT subtree in the supplied frontier."""
     ones, pixels = _rgb_bit_counts(
         target_rgb, addresses, canvas_size, reference=reference_rgb,
     )
+    if predictive_logit_soft_clip > 0.0:
+        clip = rgb_bit_logits.new_tensor(predictive_logit_soft_clip)
+        loss_rgb_bit_logits = clip * torch.tanh(rgb_bit_logits / clip)
+    else:
+        loss_rgb_bit_logits = rgb_bit_logits
     log_content = (
-        ones * F.logsigmoid(rgb_bit_logits)
-        + (pixels[:, None, None] - ones) * F.logsigmoid(-rgb_bit_logits)
+        ones * F.logsigmoid(loss_rgb_bit_logits)
+        + (pixels[:, None, None] - ones) * F.logsigmoid(-loss_rgb_bit_logits)
     ).sum((1, 2))
     address_rows = {int(a): i for i, a in enumerate(addresses.detach().cpu().tolist())}
     depths = torch.tensor(
@@ -944,13 +958,20 @@ def recursive_rgb_bit_loss(
     log_z = [None] * addresses.numel()
     local_bpp = [None] * addresses.numel()
     posterior_split = split_logits.new_zeros(split_logits.shape)
+    decision_mask = torch.zeros_like(split_logits, dtype=torch.bool)
+    evidence_gap_bpp = split_logits.new_zeros(split_logits.shape)
+    stop_flag_bits = split_logits.new_zeros(split_logits.shape)
+    split_flag_bits = split_logits.new_zeros(split_logits.shape)
     for row in torch.argsort(depths, descending=True).tolist():
         address = int(addresses[row])
         child_rows = [address_rows.get(4 * address + offset) for offset in (1, 2, 3, 4)]
         can_split = depths[row] < max_depth and all(child is not None for child in child_rows)
         if can_split:
+            decision_mask[row] = True
             stop = F.logsigmoid(-split_logits[row]) + log_content[row]
             split = F.logsigmoid(split_logits[row]) + torch.stack([log_z[c] for c in child_rows]).sum()
+            stop_flag_bits[row] = -F.logsigmoid(-split_logits[row]) / math.log(2.0)
+            split_flag_bits[row] = -F.logsigmoid(split_logits[row]) / math.log(2.0)
             forced_split = bool(depths[row] < minimum_depth)
             if structure_temperature_bpp > 0.0:
                 denominator = (pixels[row] * 24.0).clamp_min(1.0)
@@ -960,7 +981,7 @@ def recursive_rgb_bit_loss(
                     for child in child_rows
                 )
                 split_cost = (
-                    -F.logsigmoid(split_logits[row]) / math.log(2.0)
+                    split_flag_bits[row]
                     + child_content
                 ) / denominator
                 if forced_split:
@@ -968,6 +989,7 @@ def recursive_rgb_bit_loss(
                     # learned decision, so it carries no split-flag cost.
                     split_cost = child_content / denominator
                 temperature = split_logits.new_tensor(structure_temperature_bpp)
+                evidence_gap_bpp[row] = stop_cost - split_cost
                 if forced_split:
                     local_bpp[row] = split_cost
                     posterior_split[row] = 1.0
@@ -1039,11 +1061,55 @@ def recursive_rgb_bit_loss(
             + (1.0 - reference_bits) * flip_probability
         )
         rgb_prediction = (future_bit_probability * bit_values[None, :, None, None]).sum(1) / 255.0
+    reached_decisions = decision_mask & (reach > 0.0)
+    if bool(reached_decisions.any()):
+        decision_reach = reach[reached_decisions]
+        decision_probability = posterior_split[reached_decisions].clamp(1e-7, 1.0 - 1e-7)
+        weight = decision_reach / decision_reach.sum().clamp_min(1e-8)
+        posterior_entropy = -(
+            decision_probability * torch.log2(decision_probability)
+            + (1.0 - decision_probability) * torch.log2(1.0 - decision_probability)
+        )
+        gaps = evidence_gap_bpp[reached_decisions]
+        gap_quantiles = torch.quantile(gaps.detach(), gaps.new_tensor([0.1, 0.5, 0.9]))
+        weighted_split_probability = (weight * decision_probability).sum()
+        weighted_posterior_entropy = (weight * posterior_entropy).sum()
+        posterior_saturation = (
+            (decision_probability < 0.01) | (decision_probability > 0.99)
+        ).to(weight.dtype)
+        weighted_saturation = (weight * posterior_saturation).sum()
+        weighted_stop_flag_bits = (weight * stop_flag_bits[reached_decisions]).sum()
+        weighted_split_flag_bits = (weight * split_flag_bits[reached_decisions]).sum()
+    else:
+        zero = loss_bpp.detach() * 0.0
+        gap_quantiles = torch.stack((zero, zero, zero))
+        weighted_split_probability = zero
+        weighted_posterior_entropy = zero
+        weighted_saturation = zero
+        weighted_stop_flag_bits = zero
+        weighted_split_flag_bits = zero
+    if predictive_logit_soft_clip > 0.0:
+        logit_clip_fraction = (
+            rgb_bit_logits.detach().abs() > predictive_logit_soft_clip
+        ).to(rgb_bit_logits.dtype).mean()
+    else:
+        logit_clip_fraction = rgb_bit_logits.detach().new_zeros(())
     diagnostics = {
         "rgb_bpp": float(loss_bpp.detach().cpu()),
         "posterior_expected_nodes": float(expected_nodes.detach().cpu()),
         "posterior_mean_stop_depth": float(depth_mass.detach().cpu()),
         "posterior_split_mean": float(posterior_split.mean().detach().cpu()),
+        "reachable_split_probability": float(weighted_split_probability.detach().cpu()),
+        "posterior_entropy_bits": float(weighted_posterior_entropy.detach().cpu()),
+        "posterior_saturation_fraction": float(weighted_saturation.detach().cpu()),
+        "evidence_gap_bpp_q10": float(gap_quantiles[0].cpu()),
+        "evidence_gap_bpp_q50": float(gap_quantiles[1].cpu()),
+        "evidence_gap_bpp_q90": float(gap_quantiles[2].cpu()),
+        "stop_flag_bits": float(weighted_stop_flag_bits.detach().cpu()),
+        "split_flag_bits": float(weighted_split_flag_bits.detach().cpu()),
+        "predictive_logit_abs_max": float(rgb_bit_logits.detach().abs().max().cpu()),
+        "predictive_logit_soft_clip_fraction": float(logit_clip_fraction.cpu()),
+        "predictive_logit_soft_clip": float(predictive_logit_soft_clip),
         "prediction_spatial_std": float(
             rgb_prediction.flatten(1).std(dim=1).mean().detach().cpu()
         ),
@@ -1196,6 +1262,7 @@ def prediction_loss(
     candidate_exploration_paths: int = 0,
     minimum_prediction_depth: int = 0,
     proposal_distillation_weight: float = 1.0,
+    predictive_logit_soft_clip: float = 0.0,
 ) -> Tuple[torch.Tensor, Dict[str, float], Dict[int, Dict[str, torch.Tensor]]]:
     objective_mode = objective
     candidate_tick = time.perf_counter()
@@ -1264,6 +1331,7 @@ def prediction_loss(
                     if objective_mode == "recursive_rgb_innovation_bits" else 0.0
                 ),
                 minimum_depth=minimum_prediction_depth,
+                predictive_logit_soft_clip=predictive_logit_soft_clip,
             )
             posterior_target = diagnostics.pop("_posterior_split_target")
             posterior_reach = diagnostics.pop("_posterior_reach")
@@ -1649,8 +1717,18 @@ def train_update(
     tree_seconds = float(prepared["worker_tree_seconds"])
     tick = time.perf_counter()
     horizon_weights = horizon_weights_for_stage(str(prepared["stage"]), args)
+    curriculum_fraction = float(prepared.get("curriculum_fraction", 1.0))
     target_depth_scale, sparsity_scale = allocation_objective_scales(
-        float(prepared.get("curriculum_fraction", 1.0)), args,
+        curriculum_fraction, args,
+    )
+    final_temperature = (
+        args.structure_temperature_bpp
+        if args.structure_temperature_final_bpp is None
+        else args.structure_temperature_final_bpp
+    )
+    structure_temperature_bpp = (
+        args.structure_temperature_bpp
+        + curriculum_fraction * (final_temperature - args.structure_temperature_bpp)
     )
     future_loss, metrics, predictions = prediction_loss(
         model, state, samples[-1]["heap_indices"], prepared["targets"],
@@ -1676,13 +1754,14 @@ def train_update(
             prepared["selected_observations"][-1]
             if prepared.get("selected_observations") is not None else None
         ),
-        structure_temperature_bpp=args.structure_temperature_bpp,
+        structure_temperature_bpp=structure_temperature_bpp,
         candidate_selection=args.candidate_selection,
         candidate_split_threshold=args.candidate_split_threshold,
         candidate_exploration=args.candidate_exploration,
         candidate_exploration_paths=args.candidate_exploration_paths,
         minimum_prediction_depth=args.minimum_prediction_depth,
         proposal_distillation_weight=args.proposal_distillation_weight,
+        predictive_logit_soft_clip=args.predictive_logit_soft_clip,
     )
     forward_seconds += time.perf_counter() - tick
 
@@ -1837,13 +1916,18 @@ def evaluate_ablations(
                 dual_price=args._dual_price,
                 future_rgb=prepared.get("future_rgb"),
                 current_rgb=original[-1],
-                structure_temperature_bpp=args.structure_temperature_bpp,
+                structure_temperature_bpp=(
+                    args.structure_temperature_bpp
+                    if args.structure_temperature_final_bpp is None
+                    else args.structure_temperature_final_bpp
+                ),
                 candidate_selection=args.candidate_selection,
                 candidate_split_threshold=args.candidate_split_threshold,
                 candidate_exploration=0.0,
                 candidate_exploration_paths=0,
                 minimum_prediction_depth=args.minimum_prediction_depth,
                 proposal_distillation_weight=args.proposal_distillation_weight,
+                predictive_logit_soft_clip=args.predictive_logit_soft_clip,
             )
             scores[condition].append(float(loss.cpu()))
             for name, value in horizon_metrics.items():
@@ -1927,6 +2011,15 @@ def main() -> None:
         raise ValueError("candidate-max-nodes must be at least five when supplied")
     if args.proposal_distillation_weight < 0.0:
         raise ValueError("proposal-distillation-weight must be non-negative")
+    if args.structure_temperature_bpp < 0.0:
+        raise ValueError("structure-temperature-bpp must be non-negative")
+    if (
+        args.structure_temperature_final_bpp is not None
+        and args.structure_temperature_final_bpp < 0.0
+    ):
+        raise ValueError("structure-temperature-final-bpp must be non-negative")
+    if args.predictive_logit_soft_clip < 0.0:
+        raise ValueError("predictive-logit-soft-clip must be non-negative")
     if not 0 <= args.minimum_prediction_depth <= MODEL_CONFIG.max_depth:
         raise ValueError("minimum-prediction-depth must lie within the model tree")
     if not 0.0 <= args.min_learning_rate <= args.learning_rate:
