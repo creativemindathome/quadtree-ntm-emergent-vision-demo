@@ -178,6 +178,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-learning-rate", type=float, default=0.0)
     parser.add_argument("--checkpoint-every", type=int, default=1000)
     parser.add_argument("--eval-every", type=int, default=1000)
+    parser.add_argument(
+        "--skip-final-eval", action="store_true",
+        help="save the final checkpoint without the seven-condition evaluation",
+    )
     parser.add_argument("--periodic-eval-families", type=int, default=2)
     parser.add_argument("--output-dir", default="runs/object-permanence-quadtree-v3")
     parser.add_argument("--resume-from", type=Path, default=None)
@@ -936,6 +940,7 @@ def recursive_rgb_bit_loss(
     structure_temperature_bpp: float = 0.0,
     minimum_depth: int = 0,
     predictive_logit_soft_clip: float = 0.0,
+    decode_prediction: bool = True,
 ) -> Tuple[torch.Tensor, Dict[str, float], torch.Tensor]:
     """Marginalize every valid STOP/SPLIT subtree in the supplied frontier."""
     ones, pixels = _rgb_bit_counts(
@@ -950,70 +955,84 @@ def recursive_rgb_bit_loss(
         ones * F.logsigmoid(loss_rgb_bit_logits)
         + (pixels[:, None, None] - ones) * F.logsigmoid(-loss_rgb_bit_logits)
     ).sum((1, 2))
-    address_rows = {int(a): i for i, a in enumerate(addresses.detach().cpu().tolist())}
+    work_addresses = addresses.to(split_logits.device)
     depths = torch.tensor(
-        [address_to_bounds(a, canvas_size)[0] for a in address_rows],
-        device=addresses.device,
+        [address_to_bounds(int(a), canvas_size)[0] for a in addresses.detach().cpu().tolist()],
+        device=split_logits.device,
     )
-    log_z = [None] * addresses.numel()
-    local_bpp = [None] * addresses.numel()
+    sorted_addresses, sorted_rows = torch.sort(work_addresses)
+    log_z = log_content.new_zeros(log_content.shape)
+    local_bpp = log_content.new_zeros(log_content.shape)
     posterior_split = split_logits.new_zeros(split_logits.shape)
     decision_mask = torch.zeros_like(split_logits, dtype=torch.bool)
     evidence_gap_bpp = split_logits.new_zeros(split_logits.shape)
     stop_flag_bits = split_logits.new_zeros(split_logits.shape)
     split_flag_bits = split_logits.new_zeros(split_logits.shape)
-    for row in torch.argsort(depths, descending=True).tolist():
-        address = int(addresses[row])
-        child_rows = [address_rows.get(4 * address + offset) for offset in (1, 2, 3, 4)]
-        can_split = depths[row] < max_depth and all(child is not None for child in child_rows)
-        if can_split:
-            decision_mask[row] = True
-            stop = F.logsigmoid(-split_logits[row]) + log_content[row]
-            split = F.logsigmoid(split_logits[row]) + torch.stack([log_z[c] for c in child_rows]).sum()
-            stop_flag_bits[row] = -F.logsigmoid(-split_logits[row]) / math.log(2.0)
-            split_flag_bits[row] = -F.logsigmoid(split_logits[row]) / math.log(2.0)
-            forced_split = bool(depths[row] < minimum_depth)
-            if structure_temperature_bpp > 0.0:
-                denominator = (pixels[row] * 24.0).clamp_min(1.0)
-                stop_cost = -stop / (math.log(2.0) * denominator)
-                child_content = sum(
-                    pixels[child] * 24.0 * local_bpp[child]
-                    for child in child_rows
-                )
-                split_cost = (
-                    split_flag_bits[row]
-                    + child_content
-                ) / denominator
-                if forced_split:
-                    # The global floor is part of the coding alphabet, not a
-                    # learned decision, so it carries no split-flag cost.
-                    split_cost = child_content / denominator
-                temperature = split_logits.new_tensor(structure_temperature_bpp)
-                evidence_gap_bpp[row] = stop_cost - split_cost
-                if forced_split:
-                    local_bpp[row] = split_cost
-                    posterior_split[row] = 1.0
-                else:
-                    local_bpp[row] = -temperature * torch.logsumexp(
+    offsets = work_addresses.new_tensor((1, 2, 3, 4))
+    temperature = split_logits.new_tensor(structure_temperature_bpp)
+    for depth in range(max_depth, -1, -1):
+        rows = torch.nonzero(depths == depth, as_tuple=False).flatten()
+        if rows.numel() == 0:
+            continue
+        denominator = (pixels[rows] * 24.0).clamp_min(1.0)
+        level_log_z = log_content[rows]
+        level_local_bpp = -level_log_z / (math.log(2.0) * denominator)
+        if depth < max_depth:
+            child_addresses = 4 * work_addresses[rows, None] + offsets[None, :]
+            positions = torch.searchsorted(sorted_addresses, child_addresses)
+            safe_positions = positions.clamp_max(max(work_addresses.numel() - 1, 0))
+            children_exist = (
+                (positions < work_addresses.numel())
+                & (sorted_addresses[safe_positions] == child_addresses)
+            )
+            can_split = children_exist.all(dim=1)
+            if bool(can_split.any()):
+                split_rows = rows[can_split]
+                child_rows = sorted_rows[safe_positions[can_split]]
+                decision_mask[split_rows] = True
+                stop = F.logsigmoid(-split_logits[split_rows]) + log_content[split_rows]
+                split = F.logsigmoid(split_logits[split_rows]) + log_z[child_rows].sum(1)
+                stop_flags = -F.logsigmoid(-split_logits[split_rows]) / math.log(2.0)
+                split_flags = -F.logsigmoid(split_logits[split_rows]) / math.log(2.0)
+                stop_flag_bits[split_rows] = stop_flags
+                split_flag_bits[split_rows] = split_flags
+                split_denominator = denominator[can_split]
+                stop_cost = -stop / (math.log(2.0) * split_denominator)
+                forced = depths[split_rows] < minimum_depth
+                if structure_temperature_bpp > 0.0:
+                    child_content = (
+                        pixels[child_rows] * 24.0 * local_bpp[child_rows]
+                    ).sum(1)
+                    learned_split_cost = (split_flags + child_content) / split_denominator
+                    forced_split_cost = child_content / split_denominator
+                    split_cost = torch.where(forced, forced_split_cost, learned_split_cost)
+                    split_local_bpp = -temperature * torch.logsumexp(
                         torch.stack((-stop_cost / temperature, -split_cost / temperature)), dim=0,
                     )
-                    posterior_split[row] = torch.sigmoid((stop_cost - split_cost) / temperature)
-                log_z[row] = -local_bpp[row] * denominator * math.log(2.0)
-            else:
-                if forced_split:
-                    log_z[row] = torch.stack([log_z[c] for c in child_rows]).sum()
-                    posterior_split[row] = 1.0
+                    split_local_bpp = torch.where(forced, split_cost, split_local_bpp)
+                    split_log_z = -split_local_bpp * split_denominator * math.log(2.0)
+                    split_posterior = torch.sigmoid(
+                        ((stop_cost - split_cost) / temperature).detach()
+                    )
                 else:
-                    log_z[row] = torch.logaddexp(stop, split)
-                    posterior_split[row] = torch.sigmoid(split - stop)
-        else:
-            log_z[row] = log_content[row]
-            local_bpp[row] = -log_content[row] / (
-                math.log(2.0) * (pixels[row] * 24.0).clamp_min(1.0)
-            )
-    root = address_rows.get(0)
-    if root is None:
+                    forced_log_z = log_z[child_rows].sum(1)
+                    split_log_z = torch.where(forced, forced_log_z, torch.logaddexp(stop, split))
+                    split_local_bpp = -split_log_z / (math.log(2.0) * split_denominator)
+                    split_cost = -split / (math.log(2.0) * split_denominator)
+                    split_posterior = torch.sigmoid((split - stop).detach())
+                split_posterior = torch.where(forced, torch.ones_like(split_posterior), split_posterior)
+                evidence_gap_bpp[split_rows] = (stop_cost - split_cost).detach()
+                posterior_split[split_rows] = split_posterior
+                level_log_z = level_log_z.index_copy(0, torch.nonzero(can_split).flatten(), split_log_z)
+                level_local_bpp = level_local_bpp.index_copy(
+                    0, torch.nonzero(can_split).flatten(), split_local_bpp,
+                )
+        log_z = log_z.index_copy(0, rows, level_log_z)
+        local_bpp = local_bpp.index_copy(0, rows, level_local_bpp)
+    root_rows = torch.nonzero(work_addresses == 0, as_tuple=False).flatten()
+    if root_rows.numel() != 1:
         raise ValueError("recursive tree support must contain root address 0")
+    root = int(root_rows.item())
     n_valid_pixels = target_rgb.shape[-2] * target_rgb.shape[-1] * 24
     loss_bpp = (
         local_bpp[root]
@@ -1021,28 +1040,35 @@ def recursive_rgb_bit_loss(
         else -log_z[root] / (math.log(2.0) * n_valid_pixels)
     )
 
-    # Decode a diagnostic posterior-mean image from local bit probabilities.
-    bit_values = torch.tensor([1, 2, 4, 8, 16, 32, 64, 128], device=addresses.device)
-    node_rgb = (torch.sigmoid(rgb_bit_logits) * bit_values).sum(-1) / 255.0
-    reach = split_logits.new_zeros(split_logits.shape)
-    reach[root] = 1.0
-    for row in torch.argsort(depths).tolist():
-        address = int(addresses[row])
-        for offset in (1, 2, 3, 4):
-            child = address_rows.get(4 * address + offset)
-            if child is not None:
-                reach[child] = reach[row] * posterior_split[row]
-    stop_mass = reach * (1.0 - posterior_split)
+    # Reach and reconstruction are diagnostics, never part of the optimized
+    # code length. Keep them outside autograd; training can skip the expensive
+    # per-node raster entirely and decode only during evaluation.
+    with torch.no_grad():
+        reach = split_logits.new_zeros(split_logits.shape)
+        reach[root] = 1.0
+        for depth in range(max_depth):
+            rows = torch.nonzero((depths == depth) & decision_mask, as_tuple=False).flatten()
+            if rows.numel() == 0:
+                continue
+            child_addresses = 4 * work_addresses[rows, None] + offsets[None, :]
+            positions = torch.searchsorted(sorted_addresses, child_addresses)
+            child_rows = sorted_rows[positions]
+            reach[child_rows.flatten()] = (
+                reach[rows, None] * posterior_split[rows, None]
+            ).expand(-1, 4).flatten()
+        stop_mass = reach * (1.0 - posterior_split)
+        expected_nodes = reach.sum()
+        depth_mass = (stop_mass * depths).sum()
     rgb_prediction = target_rgb.new_zeros((3, target_rgb.shape[-2], target_rgb.shape[-1]))
-    depth_mass = split_logits.new_zeros(())
-    expected_nodes = reach.sum()
-    for row, address in enumerate(addresses.detach().cpu().tolist()):
-        depth, x, y, size = address_to_bounds(int(address), canvas_size)
-        x1, y1 = min(x + size, target_rgb.shape[-1]), min(y + size, target_rgb.shape[-2])
-        if x < x1 and y < y1:
-            rgb_prediction[:, y:y1, x:x1] += stop_mass[row] * node_rgb[row, :, None, None]
-        depth_mass = depth_mass + stop_mass[row] * depth
-    if reference_rgb is not None:
+    if decode_prediction:
+        bit_values = torch.tensor([1, 2, 4, 8, 16, 32, 64, 128], device=split_logits.device)
+        node_rgb = (torch.sigmoid(rgb_bit_logits.detach()) * bit_values).sum(-1) / 255.0
+        for row, address in enumerate(addresses.detach().cpu().tolist()):
+            _, x, y, size = address_to_bounds(int(address), canvas_size)
+            x1, y1 = min(x + size, target_rgb.shape[-1]), min(y + size, target_rgb.shape[-2])
+            if x < x1 and y < y1:
+                rgb_prediction[:, y:y1, x:x1] += stop_mass[row] * node_rgb[row, :, None, None]
+    if decode_prediction and reference_rgb is not None:
         # Decode expected XOR bits against the observed frame. This makes a
         # zero-innovation prediction equal persistence rather than black.
         reference_u8 = (reference_rgb.clamp(0, 1) * 255).round().to(torch.int64)
@@ -1054,7 +1080,7 @@ def recursive_rgb_bit_loss(
             x1, y1 = min(x + size, target_rgb.shape[-1]), min(y + size, target_rgb.shape[-2])
             if x < x1 and y < y1:
                 flip_probability[:, :, y:y1, x:x1] += (
-                    stop_mass[row] * torch.sigmoid(rgb_bit_logits[row])[:, :, None, None]
+                    stop_mass[row] * torch.sigmoid(rgb_bit_logits[row].detach())[:, :, None, None]
                 )
         future_bit_probability = (
             reference_bits * (1.0 - flip_probability)
@@ -1112,7 +1138,7 @@ def recursive_rgb_bit_loss(
         "predictive_logit_soft_clip": float(predictive_logit_soft_clip),
         "prediction_spatial_std": float(
             rgb_prediction.flatten(1).std(dim=1).mean().detach().cpu()
-        ),
+        ) if decode_prediction else 0.0,
         "innovation_rate": float(
             (ones[root].sum() / (pixels[root] * 24).clamp_min(1.0)).detach().cpu()
         ) if reference_rgb is not None else 0.0,
@@ -1263,6 +1289,7 @@ def prediction_loss(
     minimum_prediction_depth: int = 0,
     proposal_distillation_weight: float = 1.0,
     predictive_logit_soft_clip: float = 0.0,
+    decode_rgb_prediction: bool = True,
 ) -> Tuple[torch.Tensor, Dict[str, float], Dict[int, Dict[str, torch.Tensor]]]:
     objective_mode = objective
     candidate_tick = time.perf_counter()
@@ -1300,6 +1327,9 @@ def prediction_loss(
         dtype=torch.float32,
         device=candidates.device,
     )
+    metrics["candidate_depth8_fraction"] = float(
+        (candidate_depths == model.config.max_depth).to(torch.float32).mean().detach().cpu()
+    )
     if objective_mode in ("recursive_rgb_bits", "recursive_rgb_innovation_bits"):
         if future_rgb is None:
             raise ValueError("recursive_rgb_bits requires future RGB frames")
@@ -1332,6 +1362,7 @@ def prediction_loss(
                 ),
                 minimum_depth=minimum_prediction_depth,
                 predictive_logit_soft_clip=predictive_logit_soft_clip,
+                decode_prediction=decode_rgb_prediction,
             )
             posterior_target = diagnostics.pop("_posterior_split_target")
             posterior_reach = diagnostics.pop("_posterior_reach")
@@ -1762,6 +1793,7 @@ def train_update(
         minimum_prediction_depth=args.minimum_prediction_depth,
         proposal_distillation_weight=args.proposal_distillation_weight,
         predictive_logit_soft_clip=args.predictive_logit_soft_clip,
+        decode_rgb_prediction=False,
     )
     forward_seconds += time.perf_counter() - tick
 
@@ -2244,23 +2276,29 @@ def main() -> None:
                     })
 
     training_wall_seconds = time.perf_counter() - wall_start
-    tick = time.perf_counter()
-    eval_rows = [
-        prepare_example(
-            args.updates + i, args.updates, args.seed, args.environment_mode,
-        )
-        for i in range(args.eval_families)
-    ]
-    eval_environment_seconds = time.perf_counter() - tick
-    tick = time.perf_counter()
-    ablations, qualitative = evaluate_ablations(model, eval_rows, tree_config, args)
-    eval_model_seconds = time.perf_counter() - tick
-    tick = time.perf_counter()
-    _write_json(output / "ablations.json", ablations)
-    for condition, values in ablations.items():
-        _append_jsonl(eval_log, {"condition": condition, **values})
-    torch.save(qualitative, output / "qualitative.pt")
-    artifact_write_seconds = time.perf_counter() - tick
+    if args.skip_final_eval:
+        ablations = {}
+        eval_environment_seconds = 0.0
+        eval_model_seconds = 0.0
+        artifact_write_seconds = 0.0
+    else:
+        tick = time.perf_counter()
+        eval_rows = [
+            prepare_example(
+                args.updates + i, args.updates, args.seed, args.environment_mode,
+            )
+            for i in range(args.eval_families)
+        ]
+        eval_environment_seconds = time.perf_counter() - tick
+        tick = time.perf_counter()
+        ablations, qualitative = evaluate_ablations(model, eval_rows, tree_config, args)
+        eval_model_seconds = time.perf_counter() - tick
+        tick = time.perf_counter()
+        _write_json(output / "ablations.json", ablations)
+        for condition, values in ablations.items():
+            _append_jsonl(eval_log, {"condition": condition, **values})
+        torch.save(qualitative, output / "qualitative.pt")
+        artifact_write_seconds = time.perf_counter() - tick
     tick = time.perf_counter()
     torch.save({
         "model": model.state_dict(), "optimizer": optimizer.state_dict(),
